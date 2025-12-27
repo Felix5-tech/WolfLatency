@@ -3,10 +3,8 @@
 
 package com.example.wolfserver
 
-// Necessary imports
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Application
 import android.content.Context
 import android.content.pm.PackageManager
 import android.location.Location
@@ -14,36 +12,20 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
-import android.telephony.CellIdentityNr
-import android.telephony.CellInfo
-import android.telephony.CellInfoCdma
-import android.telephony.CellInfoGsm
-import android.telephony.CellInfoLte
-import android.telephony.CellInfoNr
-import android.telephony.CellInfoWcdma
-import android.telephony.CellSignalStrengthNr
-import android.telephony.TelephonyCallback
-import android.telephony.TelephonyDisplayInfo
-import android.telephony.TelephonyManager
+import android.telephony.*
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.absoluteOffset
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentHeight
-import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -52,144 +34,183 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import com.example.wolfserver.ui.theme.WolfServerTheme
-import io.ktor.application.call
-import io.ktor.http.HttpStatusCode
-import io.ktor.request.receiveParameters
-import io.ktor.response.respond
-import io.ktor.routing.get
-import io.ktor.routing.post
-import io.ktor.routing.routing
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.netty.Netty
-import org.greenrobot.eventbus.EventBus
-import org.greenrobot.eventbus.Subscribe
-import org.greenrobot.eventbus.ThreadMode
+import kotlinx.coroutines.*
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.BufferedWriter
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
+import java.net.Inet6Address
+import java.net.NetworkInterface
 import java.text.SimpleDateFormat
 import java.util.Date
-
-
-class MyApplication : Application() {
-    @RequiresApi(Build.VERSION_CODES.R)
-    override fun onCreate() {
-        super.onCreate()
-        startServer()
-    }
-
-    @RequiresApi(Build.VERSION_CODES.R)
-    private fun startServer() {
-        embeddedServer(Netty, port = 5000) {
-            routing {
-                get("/") {
-                    call.respond(HttpStatusCode.OK, "Hello from the Android server!\nYou made it!")
-                }
-                post("/") {
-                    val postParameters = call.receiveParameters()
-                    Log.d("Lines", "Parâmetros: $postParameters")
-                    val csvLine = postParameters["csvLine"] ?: ""
-
-                    val firstLine = postParameters["isFirstLine"].toBoolean()
-                    Log.d("Primeira Linha", "$firstLine")
-                    if (csvLine.isNotEmpty()) {
-                        appendToCSVFile(csvLine, firstLine)
-                        call.respond(HttpStatusCode.OK, "Updated CSV file")
-                    } else {
-                        call.respond(HttpStatusCode.BadRequest, "Invalid data")
-                    }
-                }
-            }
-        }.start(wait = false)
-    }
-}
 
 class MainActivity : ComponentActivity() {
 
     private val nsa = mutableStateOf(false)
+    private val currentIpState = mutableStateOf("Waiting for IP...")
+
+    // Escopo para rodar as tarefas em background
+    private val scope = CoroutineScope(Dispatchers.IO)
+
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1000
+        private const val NTFY_TOPIC = ""
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // MANTÉM A TELA LIGADA (Essencial para o servidor não dormir)
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
         start5GDetection(this)
 
+        // Inicia os Loops Eternos (Coleta e IPv6)
+        startContinuousCollection()
+        startIpBroadcaster()
 
         setContent {
             WolfServerTheme {
-                // A surface container using the 'background' color from the theme
                 Surface(
-
                     modifier = Modifier
                         .background(color = Color.White)
                         .fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Greeting(name = "")
-
-                    Button(
-                        onClick = {
-                            // Call the function to delete the CSV file
-                            deleteCSVFile()
-                        },
-                        modifier = Modifier
-                            .wrapContentWidth()
-                            .wrapContentHeight()
-                            .padding(2.dp)
-                            .absoluteOffset(x = 0.dp, y = 70.dp)
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("Delete CSV Files")
+                        Greeting(name = "")
+
+                        // Mostra o IP atual na tela para facilitar debug visual
+                        Text(
+                            text = currentIpState.value,
+                            modifier = Modifier.padding(16.dp)
+                        )
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        // Botão Manual para enviar IP
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    sendIpToNtfy()
+                                }
+                            },
+                            modifier = Modifier.padding(8.dp)
+                        ) {
+                            Text("Force Send IP to Ntfy")
+                        }
+
+                        Button(
+                            onClick = {
+                                deleteCSVFile()
+                                Toast.makeText(this@MainActivity, "CSV Deleted", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.padding(8.dp)
+                        ) {
+                            Text("Delete Server Data CSV")
+                        }
                     }
                 }
             }
         }
-        // Register to receive the CsvUpdateEvent event
-        EventBus.getDefault().register(this)
+    }
+
+    // --- LOOP 1: Coleta de Dados a cada 1 segundo ---
+    private fun startContinuousCollection() {
+        scope.launch {
+            while (true) {
+                // Captura os dados (roda na thread IO para não travar, mas captureCellInfo é leve)
+                captureCellInfo(this@MainActivity)
+                delay(1000) // Espera 1 segundo
+            }
+        }
+    }
+
+    // --- LOOP 2: Envia IPv6 a cada 30 segundos ---
+    private fun startIpBroadcaster() {
+        scope.launch {
+            while (true) {
+                sendIpToNtfy()
+                delay(300000) // 30 segundos
+            }
+        }
+    }
+
+    // Função para descobrir o IPv6 Global do dispositivo
+    private fun getDeviceIPv6(): String? {
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                val inetAddresses = networkInterface.inetAddresses
+                while (inetAddresses.hasMoreElements()) {
+                    val inetAddress = inetAddresses.nextElement()
+                    // Procura por IPv6 que não seja loopback (::1) nem link-local (fe80::)
+                    if (inetAddress is Inet6Address && !inetAddress.isLoopbackAddress && !inetAddress.isLinkLocalAddress) {
+                        // Remove o sufixo de interface se houver (ex: %wlan0)
+                        val ip = inetAddress.hostAddress
+                        val delimiter = ip.indexOf('%')
+                        return if (delimiter < 0) ip else ip.substring(0, delimiter)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return null
+    }
+
+    // Função que manda o IP para o Ntfy
+    private fun sendIpToNtfy() {
+        val ip = getDeviceIPv6()
+
+        if (ip != null) {
+            currentIpState.value = "Current IPv6: $ip" // Atualiza UI
+
+            val client = OkHttpClient()
+            val requestBody = ip.toRequestBody("text/plain".toMediaType())
+
+            val request = Request.Builder()
+                .url("https://ntfy.sh/$NTFY_TOPIC")
+                .post(requestBody)
+                .build()
+
+            try {
+                client.newCall(request).execute().close()
+                Log.d("WolfServer", "IP sent to Ntfy: $ip")
+            } catch (e: IOException) {
+                Log.e("WolfServer", "Failed to send to Ntfy", e)
+            }
+        } else {
+            currentIpState.value = "IPv6 not found. Check connection."
+        }
     }
 
     private fun deleteCSVFile() {
         val serverDataFileName = "serverdata.csv"
-        val backupClientDataFileName = "backupclientdata.csv"
-
-        // Directory path and CSV files
+        // Não deletamos mais o backupclientdata pois ele não é mais usado/gerado
         val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
         val serverDataFile = File(baseDir, serverDataFileName)
-        val backupClientDataFile = File(baseDir, backupClientDataFileName)
 
-        // Try deleting the CSV file
         if (serverDataFile.exists()) {
-            val deleted = serverDataFile.delete()
+            serverDataFile.delete()
         }
-        if (backupClientDataFile.exists()) {
-            val deleted = backupClientDataFile.delete()
-        }
-    }
-
-    // Method annotated with @Subscribe to receive the CsvUpdateEvent event
-    @RequiresApi(Build.VERSION_CODES.R)
-    @Subscribe(threadMode = ThreadMode.MAIN)
-    fun onCsvUpdate(event: CsvUpdateEvent) {
-        val showToast = Toast.makeText(
-            this@MainActivity,
-            "Updated CSV",
-            Toast.LENGTH_SHORT
-        )
-        showToast.show()
-        Thread.sleep(300)
-        showToast.cancel()
-        captureCellInfo(this@MainActivity)
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onDestroy() {
         super.onDestroy()
-        // Unregister from EventBus when MainActivity is destroyed
-        EventBus.getDefault().unregister(this)
-        // Para a detecção de 5G para evitar leaks
         stop5GDetection(this)
+        // Remove flag de manter tela ligada
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     @SuppressLint("SuspiciousIndentation")
@@ -204,7 +225,6 @@ class MainActivity : ComponentActivity() {
             val telephonyManager =
                 context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
             val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
-
 
             if (telephonyManager.phoneType == TelephonyManager.PHONE_TYPE_GSM) {
                 val cellInfoList: List<CellInfo>? = telephonyManager.allCellInfo
@@ -223,10 +243,14 @@ class MainActivity : ComponentActivity() {
                             location?.let {
                                 val latitude = it.latitude
                                 val longitude = it.longitude
-                                // Adding latitude and longitude
                                 data.add(latitude)
                                 data.add(longitude)
+                            } ?: run {
+                                // Se location for null, adiciona placeholders para não quebrar CSV
+                                data.add(0.0)
+                                data.add(0.0)
                             }
+
                             data.add(cellInfo.cellSignalStrength.dbm)
                             data.add(cellInfo.cellSignalStrength.level)
 
@@ -289,10 +313,7 @@ class MainActivity : ComponentActivity() {
                                     data.add(cellSignalNr.ssSinr)
                                     data.add(cellIdentityNr.nrarfcn)
                                 }
-
-                                else -> {
-                                    // Logic for other cell types, if necessary
-                                }
+                                else -> { }
                             }
 
                             // Save to CSV file
@@ -301,36 +322,49 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-            } else {
-
-                ActivityCompat.requestPermissions(
-                    context as ComponentActivity,
-                    arrayOf(
-                        Manifest.permission.ACCESS_COARSE_LOCATION,
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.READ_PHONE_STATE,
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE
-                    ),
-                    PERMISSION_REQUEST_CODE
-
-                )
-
             }
-        } else {
-
-            ActivityCompat.requestPermissions(
-                context as ComponentActivity,
-                arrayOf(
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.READ_PHONE_STATE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                ),
-                PERMISSION_REQUEST_CODE
-
-            )
         }
     }
+
+    // Adicionado Synchronized para evitar problemas de concorrência com threads
+    @Synchronized
+    private fun saveCellInfoToCSV(cellInfoData: List<Any>) {
+        val csvFileName = "serverdata.csv"
+        val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
+        val csvFile = File(baseDir, csvFileName)
+
+        try {
+            if (!baseDir.exists()) {
+                baseDir.mkdirs()
+            }
+
+            val sharedPreferences = getSharedPreferences("MyPrefs", Context.MODE_PRIVATE)
+            var currentCount = sharedPreferences.getInt("count", 0)
+
+            if (!csvFile.exists()) {
+                val writer = BufferedWriter(FileWriter(csvFile, true))
+                val columnNames =
+                    "Sequence, Timestamp, Latitude, Longitude, Signal_dbm, Signal_level, MCC, MNC, CellId, Tac/Lac, Mobile_Network, RSRQ, RSSNR, NRARFCN"
+                writer.write("$columnNames\n")
+                writer.close()
+                currentCount = 0
+            }
+
+            val writer = BufferedWriter(FileWriter(csvFile, true))
+            val existingCount = currentCount
+            val newCount = existingCount + 1
+            sharedPreferences.edit().putInt("count", newCount).apply()
+
+            val csvLine = cellInfoData.joinToString(",") { it.toString() }
+
+            writer.write("$newCount,$csvLine")
+            writer.newLine()
+            writer.close()
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
+
     private var telephonyCallback: TelephonyCallback? = null
 
     @RequiresApi(Build.VERSION_CODES.S)
@@ -344,20 +378,13 @@ class MainActivity : ComponentActivity() {
                     override fun onDisplayInfoChanged(displayInfo: TelephonyDisplayInfo) {
                         when (displayInfo.overrideNetworkType) {
                             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA -> {
-                                // Conexão 5G NSA detectada
                                 Log.d("ATLAS", "Tipo de rede: NSA")
-                                on5GNSAConnectionDetected()
-
+                                nsa.value = true
                             }
-
                             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED -> {
-                                // Conexão 5G+ detectada (A implementar)
                                 Log.d("ATLAS", "Tipo de rede: PLUS")
-
                             }
-
                             else -> {
-                                // Não está conectado a uma rede 5G
                                 nsa.value = false
                                 Log.d("ATLAS", "Não conectado.")
                             }
@@ -367,6 +394,7 @@ class MainActivity : ComponentActivity() {
             telephonyManager.registerTelephonyCallback(context.mainExecutor, telephonyCallback!!)
         }
     }
+
     @RequiresApi(Build.VERSION_CODES.S)
     fun stop5GDetection(context: Context) {
         val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
@@ -376,127 +404,30 @@ class MainActivity : ComponentActivity() {
         telephonyCallback = null
     }
 
-    fun on5GNSAConnectionDetected(): MutableState<Boolean> {
-        // Coloque aqui o código que será executado quando a conexão 5G NSA for detectada
-        nsa.value = true
-        return nsa
-    }
-
-    private fun saveCellInfoToCSV(cellInfoData: List<Any>) {
-        val csvFileName = "serverdata.csv"
-
-        // CSV storage directory
-        val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
-        val csvFile = File(baseDir, csvFileName)
-
-        try {
-            // Checks if the directory exists and creates it if it doesn't
-            if (!baseDir.exists()) {
-                baseDir.mkdirs()
-            }
-
-            val sharedPreferences = getSharedPreferences("MyPrefs", Context.MODE_PRIVATE)
-            var currentCount = sharedPreferences.getInt("count", 0)
-
-            if (!csvFile.exists()) {
-                // Write the column names in the first line
-                val writer = BufferedWriter(FileWriter(csvFile, true))
-                val columnNames =
-                    "Sequence, Timestamp, Latitude, Longitude, Signal_dbm, Signal_level, MCC, MNC, CellId, Tac/Lac, Mobile_Network, RSRQ, RSSNR, NRARFCN"
-                writer.write("$columnNames\n")
-                writer.close()
-
-                // If the CSV file doesn't exist, restart the count
-                currentCount = 0
-            }
-
-            // Opens the writer for the CSV file
-            val writer = BufferedWriter(FileWriter(csvFile, true))
-
-            // Gets the existing count
-            val existingCount = currentCount
-            // Increases the count
-            val newCount = existingCount + 1
-            // Updates the count in shared preferences
-            sharedPreferences.edit().putInt("count", newCount).apply()
-
-            val csvLine = cellInfoData.joinToString(",") { it.toString() }
-
-            // Write the line to the file
-            writer.write("$newCount,$csvLine")
-            writer.newLine() // Adds a line break to the next entry
-
-            // The writer closes
-            writer.close()
-        } catch (e: IOException) {
-            e.printStackTrace()
+    @Composable
+    fun CenteredText(text: String) {
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(text = text)
         }
     }
-}
 
-// Event to notify MainActivity when new data is added to CSV
-class CsvUpdateEvent
-
-
-fun appendToCSVFile(data: String, firstline: Boolean) {
-    val csvFileName = "backupclientdata.csv"
-    val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
-
-    if (!baseDir.exists()) {
-        baseDir.mkdirs()
+    @Composable
+    fun Greeting(name: String, modifier: Modifier = Modifier) {
+        // Mostra o status do servidor
+        Text(text = "WolfServer Running...\nCollecting Data: Every 1s\nSending IP: Every 30s",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(16.dp))
     }
 
-    val filePath = File(baseDir, csvFileName)
-
-    try {
-        if (firstline && !filePath.exists()) {
-            // Se for a primeira linha e o arquivo não existir, escreva os nomes das colunas
-            val writer = BufferedWriter(FileWriter(filePath, false))
-            writer.write(data)
-            writer.newLine()
-            writer.close()
-        } else {
-            // Adicione a linha de dados ao arquivo
-            filePath.appendText("$data\n")
+    @Preview(showBackground = true)
+    @Composable
+    fun GreetingPreview() {
+        WolfServerTheme {
+            Greeting("Android")
         }
-
-        if (!firstline) {
-            // Notifique o evento apenas se não for a primeira linha
-            EventBus.getDefault().post(CsvUpdateEvent())
-        }
-    } catch (e: Exception) {
-        e.printStackTrace()
-    }
-}
-
-@Composable
-fun CenteredText(text: String) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(text = text)
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun CenteredTextPreview() {
-    WolfServerTheme {
-        CenteredText("Centered Text")
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    CenteredText(text = "Server running!")
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    WolfServerTheme {
-        Greeting("Android")
     }
 }
