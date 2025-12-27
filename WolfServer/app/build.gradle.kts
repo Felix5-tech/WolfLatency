@@ -1,7 +1,3 @@
-@file:Suppress("UNUSED_EXPRESSION")
-
-import com.android.build.api.dsl.Packaging
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,16 +5,12 @@ plugins {
 
 android {
     namespace = "com.example.wolfserver"
-    compileSdk = 33
-
-    packagingOptions  {
-        resources.excludes.add("META-INF/*")
-    }
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.wolfserver"
-        minSdk = 24
-        targetSdk = 33
+        minSdk = 24 // Mantivemos 24 igual ao cliente
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
 
@@ -37,6 +29,8 @@ android {
             )
         }
     }
+
+    // Voltamos para Java 1.8 para ficar igual ao Client
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -44,12 +38,15 @@ android {
     kotlinOptions {
         jvmTarget = "1.8"
     }
+
     buildFeatures {
         compose = true
     }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.4.3"
     }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -58,19 +55,23 @@ android {
 }
 
 dependencies {
-
-    implementation("androidx.core:core-ktx:1.9.0")
+    // Mesmas dependências base do Client
+    implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
-    implementation("androidx.activity:activity-compose:1.7.2")
+    implementation("androidx.activity:activity-compose:1.8.2")
     implementation(platform("androidx.compose:compose-bom:2023.03.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("io.ktor:ktor-server-core:1.6.5")
-    implementation("io.ktor:ktor-server-netty:1.6.5") // Usaremos o Netty como servidor HTTP
-    implementation("org.greenrobot:eventbus:3.2.0")
+    implementation("androidx.compose.material:material-icons-extended:1.4.3")
+
+    // Dependências de Rede e CSV (Iguais ao Client)
+    implementation("com.squareup.okhttp3:okhttp:4.10.0")
+    implementation("com.google.android.gms:play-services-location:21.0.1")
     implementation("com.opencsv:opencsv:5.9")
+
+    // Testes
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")

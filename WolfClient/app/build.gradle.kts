@@ -67,6 +67,7 @@ dependencies {
     implementation("com.opencsv:opencsv:5.9")
     implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("com.google.android.material:material:1.11.0")
+    implementation("androidx.compose.material:material-icons-extended:1.4.3")
     implementation("io.viascom.nanoid:nanoid:1.0.0")
 
 

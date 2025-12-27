@@ -21,6 +21,9 @@ import android.content.Intent
 import androidx.core.content.FileProvider
 import android.net.Uri
 import android.provider.Settings
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 
 // Imports de Telefonia
 import android.telephony.CellIdentityNr
@@ -35,19 +38,13 @@ import android.telephony.TelephonyCallback
 import android.telephony.TelephonyDisplayInfo
 import android.telephony.TelephonyManager
 
-// Imports do Google Play Services (Localização)
-import com.google.android.gms.location.FusedLocationProviderClient
-import com.google.android.gms.location.LocationCallback
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationResult
-import com.google.android.gms.location.LocationServices
-
 // Imports de Rede e IO
 import com.opencsv.bean.CsvBindByName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -68,20 +65,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.* // Importa Box, Column, Row, Spacer, PaddingValues, etc
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.* import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.* // Importa Button, Card, Text, FloatingActionButton, Divider, Defaults
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.LockOpen // <--- MUDANÇA: Ícone de cadeado aberto
+import androidx.compose.material3.* import androidx.compose.material.icons.filled.Share
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha // Importante para o bloqueio de tela
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
@@ -97,15 +92,19 @@ import com.example.wolfclient.ui.theme.WolfClientTheme
 class MainActivity : ComponentActivity() {
 
     // Declaration of state variables
-    private lateinit var fusedLocationClient: FusedLocationProviderClient
+    // REMOVIDO: fusedLocationClient
+
     private val resultFromRequestState = mutableStateOf<String?>(null)
-    private val latitudeState = mutableStateOf<Double?>(null)
-    private val longitudeState = mutableStateOf<Double?>(null)
+    private val latitudeState = mutableStateOf(0.0) // Inicializa com 0.0
+    private val longitudeState = mutableStateOf(0.0)
     private val urlState = mutableStateOf(TextFieldValue())
     private val nsa = mutableStateOf(false)
     private val transportation = mutableStateOf(1)
     private val timeStampValue = mutableStateOf(" ")
     private val cellIdState = mutableStateOf<Any>(0)
+
+    // Listener de GPS Nativo
+    private var locationListener: LocationListener? = null
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1000
@@ -119,8 +118,6 @@ class MainActivity : ComponentActivity() {
 
         checkStoragePermission()
 
-        // Inicializa serviços
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         start5GDetection(this)
 
         setContent {
@@ -283,11 +280,18 @@ class MainActivity : ComponentActivity() {
                             Button(
                                 onClick = {
                                     if (!isRunning.value) {
+
+                                        // 1. Inicia o GPS Nativo (Força Bruta - Igual Servidor)
+                                        startActiveLocationUpdates()
+
                                         isRunning.value = true
+
+                                        // 2. Inicia o loop
                                         coroutineScope.launch {
                                             while (true) {
                                                 val url = urlState.value.text
                                                 if (url.isNotEmpty()) {
+                                                    // Roda a coleta usando a localização atualizada em background
                                                     requestLocationAndFetchData(url)
                                                 }
                                                 // Loop limpo: sem toasts aqui
@@ -406,14 +410,14 @@ class MainActivity : ComponentActivity() {
 
                                             if (reason != null) {
                                                 // Se soltou antes de completar a ação, o LaunchedEffect foi cancelado automaticamente.
-                                                // Nenhuma ação extra necessária.
                                             }
                                         }
                                     }
                                 }
                         ) {
+                            // MUDANÇA: Ícone muda para LockOpen (Cadeado Aberto)
                             Icon(
-                                imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Edit,
+                                imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.LockOpen,
                                 contentDescription = "Lock Button",
                                 tint = if (isHolding) Color.Black else Color.White
                             )
@@ -428,10 +432,38 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // Para a detecção de 5G para evitar leaks
+
+        // Limpa o GPS ao sair
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        locationListener?.let { locationManager.removeUpdates(it) }
+
         stop5GDetection(this)
     }
 
+    // --- NOVA FUNÇÃO DE GPS (FORÇA BRUTA) ---
+    // Isso garante atualizações a cada 1 segundo, mesmo parado
+    private fun startActiveLocationUpdates() {
+        val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+
+            locationListener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    // Atualiza as variáveis globais
+                    latitudeState.value = location.latitude
+                    longitudeState.value = location.longitude
+                }
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {}
+            }
+
+            // Solicita via GPS
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener!!)
+            // Solicita via Rede (backup)
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, locationListener!!)
+        }
+    }
 
     @RequiresApi(Build.VERSION_CODES.R)
     private fun getConnectedCellId(context: Context): MutableList<Any>? {
@@ -517,19 +549,12 @@ class MainActivity : ComponentActivity() {
                                     data.add(cellsignalnr.ssSinr)
                                     data.add(cellIdentityNr.nrarfcn)
                                 }
-                                // Add other cell types as required
-                                else -> {
-                                    // If you need to deal with other types of cells, do so here
-                                    // Specific treatment may be required for other cell types
-                                    // Depending on the case, return or continue the loop
-                                }
+                                else -> { }
                             }
                         }
                     }
                 }
             } else {
-                // If permissions have not been granted, ask the user to
-
                 ActivityCompat.requestPermissions(
                     context as Activity,
                     arrayOf(
@@ -538,7 +563,6 @@ class MainActivity : ComponentActivity() {
                         Manifest.permission.READ_PHONE_STATE,
                         Manifest.permission.WRITE_EXTERNAL_STORAGE,
                         Manifest.permission.MANAGE_EXTERNAL_STORAGE
-
                     ),
                     PERMISSION_REQUEST_CODE
                 )
@@ -559,20 +583,13 @@ class MainActivity : ComponentActivity() {
                     override fun onDisplayInfoChanged(displayInfo: TelephonyDisplayInfo) {
                         when (displayInfo.overrideNetworkType) {
                             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_NSA -> {
-                                // Conexão 5G NSA detectada
                                 Log.d("ATLAS", "Tipo de rede: NSA")
                                 on5GNSAConnectionDetected()
-
                             }
-
                             TelephonyDisplayInfo.OVERRIDE_NETWORK_TYPE_NR_ADVANCED -> {
-                                // Conexão 5G+ detectada (A implementar)
                                 Log.d("ATLAS", "Tipo de rede: PLUS")
-
                             }
-
                             else -> {
-                                // Não está conectado a uma rede 5G
                                 nsa.value = false
                                 Log.d("ATLAS", "Não conectado.")
                             }
@@ -592,7 +609,6 @@ class MainActivity : ComponentActivity() {
     }
 
     fun on5GNSAConnectionDetected(): MutableState<Boolean> {
-        // Coloque aqui o código que será executado quando a conexão 5G NSA for detectada
         nsa.value = true
         return nsa
     }
@@ -630,15 +646,11 @@ class MainActivity : ComponentActivity() {
                     "$newCount, ${data.transport}, ${data.timestamp}, ${data.latency}, ${data.ttl}, ${data.hops}, ${data.latitude}, ${data.longitude}," +
                             dataCellId.joinToString(",")
 
-                Log.d("CurrentCount4", "Line: $csvLine")
-
                 val writer = BufferedWriter(FileWriter(csvFile, true))
                 writer.write(csvLine)
                 writer.newLine()
                 writer.close()
 
-            } else {
-                Log.d("CurrentCount40000", "ERRROOOORR$data")
             }
 
         } catch (e: IOException) {
@@ -646,8 +658,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
-    // Function to check if the required fields of the DataModel are filled in
     private fun isValidData(data: DataModel): Boolean {
         if (data.transport > 0 &&
             data.timestamp.isNotBlank() &&
@@ -662,107 +672,71 @@ class MainActivity : ComponentActivity() {
         return false
     }
 
-
-    // Main function responsible for obtaining data
+    // --- LOOP PRINCIPAL (MODIFICADO PARA USAR GPS NATIVO) ---
     @RequiresApi(Build.VERSION_CODES.R)
-    private fun requestLocationAndFetchData(targetUrl: String) {
+    private suspend fun requestLocationAndFetchData(targetUrl: String) {
 
-        val permissionGranted = (
-                ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED) &&
-                (ActivityCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED)
+        // Aguarda ter GPS pelo menos uma vez (para não gravar 0.0)
+        // O listener 'startActiveLocationUpdates' está rodando em background atualizando essa variável
+        if (latitudeState.value == 0.0) {
+            withContext(Dispatchers.Main) {
+                resultFromRequestState.value = "Waiting for GPS Fix..."
+            }
+            return
+        }
 
-        if (!permissionGranted) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
-                PERMISSION_REQUEST_CODE
+        // 1. Pega dados da Torre
+        val cellIdInfoList = getConnectedCellId(this@MainActivity)
+
+        cellIdInfoList?.let { infoList ->
+            withContext(Dispatchers.Main) {
+                cellIdState.value = infoList
+            }
+        }
+
+        val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
+        withContext(Dispatchers.Main) {
+            timeStampValue.value = timeStamp
+        }
+
+        // 2. Testes de Rede (Ping/Hops)
+        // Feitos em thread separada (Dispatchers.IO) já que estamos em uma coroutine
+        val (latency, ttl) = pingHostIPv6(targetUrl)
+        val hops = calculateHops(targetUrl)
+
+        val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Ping Failed"
+
+        withContext(Dispatchers.Main) {
+            resultFromRequestState.value = resultString
+        }
+
+        // 3. Salva no CSV
+        cellIdInfoList?.let { infoList ->
+            val cellIdReal = if (infoList.size > 4) infoList[4] else 0
+
+            val dataModel = DataModel(
+                transportation.value,
+                timeStampValue.value,
+                cellIdReal,
+                latency,
+                ttl,
+                hops,
+                latitudeState.value ?: 0.0,
+                longitudeState.value ?: 0.0,
             )
-        } else {
-            val locationRequest = LocationRequest.create()
-                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY)
-                .setInterval(5000)
-                .setFastestInterval(1000)
-
-            val locationCallback = object : LocationCallback() {
-                override fun onLocationResult(locationResult: LocationResult) {
-                    val lastLocation = locationResult.lastLocation
-                    latitudeState.value = lastLocation?.latitude
-                    longitudeState.value = lastLocation?.longitude
-                }
-            }
-
-            fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
-
-            CoroutineScope(Dispatchers.IO).launch {
-                // Aguarda o GPS fixar
-                while (latitudeState.value == null || longitudeState.value == null) {
-                    delay(1000)
-                }
-
-                val cellIdInfoList = getConnectedCellId(this@MainActivity)
-
-                cellIdInfoList?.let { infoList ->
-                    runOnUiThread {
-                        cellIdState.value = infoList
-                    }
-                }
-
-                val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
-                runOnUiThread {
-                    timeStampValue.value = timeStamp
-                }
-
-                // 1. Ping IPv6
-                val (latency, ttl) = pingHostIPv6(targetUrl)
-
-                // 2. Hops
-                val hops = calculateHops(targetUrl)
-                val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Ping Failed"
-
-                runOnUiThread {
-                    resultFromRequestState.value = resultString
-                }
-
-                cellIdInfoList?.let { infoList ->
-                    // Validação de segurança para evitar crash se a lista for curta
-                    val cellIdReal = if (infoList.size > 4) infoList[4] else 0
-
-                    val dataModel = DataModel(
-                        transportation.value,
-                        timeStampValue.value,
-                        cellIdReal,
-                        latency,
-                        ttl,
-                        hops,
-                        latitudeState.value ?: 0.0,
-                        longitudeState.value ?: 0.0,
-                    )
-                    saveDataToCSV(dataModel, infoList)
-                }
-            }
+            saveDataToCSV(dataModel, infoList)
         }
     }
 
-    // Function that receives the data results for scrolling
     @Composable
     fun ScrollableContent(
         latitude: Double?,
         longitude: Double?,
         result: String,
         tempo: String,
-        cid: Any // Espera uma Lista
+        cid: Any
     ) {
-        // Tenta converter o objeto Any para uma Lista
         val cellInfoList = cid as? List<*>
-
-        // Extrai dados com segurança. Se falhar, mostra "N/A"
-        // Índice 0 = dBm (Sinal), Índice 4 = Cell ID (Geralmente)
         val signalDbm = cellInfoList?.getOrNull(0) ?: "N/A"
         val cellIdentity = cellInfoList?.getOrNull(4) ?: "N/A"
         val rsrq = cellInfoList?.getOrNull(7) ?: "-"
@@ -774,7 +748,6 @@ class MainActivity : ComponentActivity() {
                 .padding(16.dp)
         ) {
             item {
-                // --- STATUS CARD ---
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     shape = RoundedCornerShape(8.dp)
@@ -792,7 +765,6 @@ class MainActivity : ComponentActivity() {
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // --- PING RESULT ---
                 Text(
                     text = result,
                     style = MaterialTheme.typography.bodyLarge,
@@ -804,17 +776,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
-    // Função nova para Ping IPv6 com captura de TTL
     private fun pingHostIPv6(url: String): Pair<Long, Int> {
         var delay = -1L
         var ttl = -1
         try {
-            // Limpeza da URL para extrair apenas o host
             var host = url.replace("http://", "").replace("https://", "").split("/")[0]
-            host = host.replace("[", "").replace("]", "") // Remove colchetes de IPv6 se houver
+            host = host.replace("[", "").replace("]", "")
 
-            // Executa: ping6 -c 1 (1 pacote) -w 2 (timeout 2s)
             val process = Runtime.getRuntime().exec("ping6 -c 1 -w 2 $host")
             val exitValue = process.waitFor()
 
@@ -822,13 +790,10 @@ class MainActivity : ComponentActivity() {
                 val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
-
-                    // Extrair Latência
                     if (line!!.contains("time=")) {
                         val timePart = line!!.split("time=")[1].split(" ")[0]
                         delay = timePart.toFloat().toLong()
                     }
-                    // Extrair TTL
                     if (line!!.contains("ttl=")) {
                         val ttlPart = line!!.split("ttl=")[1].split(" ")[0]
                         ttl = ttlPart.toInt()
@@ -842,12 +807,10 @@ class MainActivity : ComponentActivity() {
         return Pair(delay, ttl)
     }
 
-    // Função para calcular Hops de Ida (Traceroute Manual)
     private fun calculateHops(url: String): Int {
         var host = url.replace("http://", "").replace("https://", "").split("/")[0]
         host = host.replace("[", "").replace("]", "")
 
-        // Tenta TTL de 1 até 30
         for (ttl in 1..30) {
             try {
                 val cmd = "ping6 -c 1 -w 1 -t $ttl $host"
@@ -855,16 +818,15 @@ class MainActivity : ComponentActivity() {
                 val exitValue = process.waitFor()
 
                 if (exitValue == 0) {
-                    return ttl // Encontrou o número de saltos para chegar
+                    return ttl
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
-        return -1 // Não alcançou o destino em 30 saltos ou erro
+        return -1
     }
 
-    // Função para pegar IP do Ntfy (Histórico Recente)
     private fun fetchIpFromNtfy(topicRaw: String, callback: (String?) -> Unit) {
         val topic = topicRaw.trim()
 
@@ -906,7 +868,6 @@ class MainActivity : ComponentActivity() {
                         val rawBody = it.body?.string() ?: ""
                         Log.d("WolfDebug", "Resposta recebida: $rawBody")
 
-                        // Filtra linhas que parecem IPv6 (tem dois pontos :)
                         val lastValidIp = rawBody.lines()
                             .filter { line -> line.contains(":") }
                             .lastOrNull { line -> line.isNotBlank() }
@@ -936,30 +897,22 @@ class MainActivity : ComponentActivity() {
 
         val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
         val sourceFile = File(baseDir, csvFileName)
-        val destFile = File(baseDir, exportName) // Cria a cópia na mesma pasta
+        val destFile = File(baseDir, exportName)
 
         if (sourceFile.exists()) {
             try {
-                // 1. CRIA UMA CÓPIA SEGURA (SNAPSHOT)
-                // O overwrite=true substitui a exportação anterior, evitando o "-1" no lado do seu app
                 sourceFile.copyTo(destFile, overwrite = true)
-
-                // 2. GERA A URI A PARTIR DA CÓPIA
                 val uri = FileProvider.getUriForFile(
                     this,
                     "${applicationContext.packageName}.provider",
-                    destFile // Compartilha o destFile, não o sourceFile
+                    destFile
                 )
-
                 val intent = Intent(Intent.ACTION_SEND)
                 intent.type = "text/csv"
                 intent.putExtra(Intent.EXTRA_STREAM, uri)
                 intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
                 startActivity(Intent.createChooser(intent, "Share Data"))
-
             } catch (e: Exception) {
-                // Se der erro (ex: arquivo em uso extremo), avisa o usuário
                 Toast.makeText(this, "Error preparing file: ${e.message}", Toast.LENGTH_SHORT).show()
                 e.printStackTrace()
             }
@@ -969,7 +922,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkStoragePermission() {
-        // Só precisa dessa permissão especial no Android 11 (R) ou superior
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
@@ -985,7 +937,6 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this, "Please allow 'All Files Access' to save CSV", Toast.LENGTH_LONG).show()
             }
         } else {
-            // Para Android 10 e anteriores, o código de permissão padrão já lida com isso
             ActivityCompat.requestPermissions(
                 this,
                 arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE),
@@ -993,7 +944,6 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
-
 
     data class DataModel(
         @CsvBindByName(column = "Transportation")
