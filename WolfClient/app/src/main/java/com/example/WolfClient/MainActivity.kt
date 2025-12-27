@@ -1,9 +1,10 @@
-// Author: Luiz Felipe Cantanhede Cristino
+// Created by: Luiz Felipe Cantanhede Cristino
+// Modified by: Guilherme Oliveira Rolim Silva, Marco Antonio Tronco Felix
 // Institution: GTA, COPPE, UFRJ
 
 package com.example.wolfclient
 
-// Necessary imports
+// Imports do Android Sistema
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -13,6 +14,15 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Looper
+import android.util.Log
+import android.widget.Toast
+import androidx.core.app.ActivityCompat
+import android.content.Intent
+import androidx.core.content.FileProvider
+import android.net.Uri
+import android.provider.Settings
+
+// Imports de Telefonia
 import android.telephony.CellIdentityNr
 import android.telephony.CellInfo
 import android.telephony.CellInfoCdma
@@ -24,48 +34,15 @@ import android.telephony.CellSignalStrengthNr
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyDisplayInfo
 import android.telephony.TelephonyManager
-import android.util.Log
-import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.annotation.RequiresApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.unit.DpOffset
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.PopupProperties
-import androidx.core.app.ActivityCompat
-import com.example.wolfclient.ui.theme.WolfClientTheme
+
+// Imports do Google Play Services (Localização)
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
+
+// Imports de Rede e IO
 import com.opencsv.bean.CsvBindByName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -73,8 +50,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import okhttp3.Call
 import okhttp3.Callback
-import okhttp3.FormBody
-import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -84,6 +59,39 @@ import java.io.FileWriter
 import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
+
+// --- IMPORTS DE UI (JETPACK COMPOSE) ---
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.annotation.RequiresApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.* // Importa Box, Column, Row, Spacer, PaddingValues, etc
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.* // Importa Button, Card, Text, FloatingActionButton, Divider, Defaults
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha // Importante para o bloqueio de tela
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
+import com.example.wolfclient.ui.theme.WolfClientTheme
 
 @Suppress("DEPRECATION")
 class MainActivity : ComponentActivity() {
@@ -98,8 +106,6 @@ class MainActivity : ComponentActivity() {
     private val transportation = mutableStateOf(1)
     private val timeStampValue = mutableStateOf(" ")
     private val cellIdState = mutableStateOf<Any>(0)
-    private val sizeResponseState = mutableStateOf(0)
-    private var toastBalloon = 0
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1000
@@ -108,186 +114,314 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("NewApi")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Mantém a tela ligada
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        checkStoragePermission()
+
+        // Inicializa serviços
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
-        // Inicia a detecção de 5G
         start5GDetection(this)
 
-
         setContent {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val sharedPreferences = remember {
+                context.getSharedPreferences("MyPrefs", Context.MODE_PRIVATE)
+            }
+
+            val savedTopic = remember {
+                sharedPreferences.getString("ntfy_topic", "") ?: ""
+            }
+
+            val topicState = remember { mutableStateOf(TextFieldValue(savedTopic)) }
             val coroutineScope = rememberCoroutineScope()
 
             WolfClientTheme {
+                // Variáveis de estado da UI
                 val gpsMessage by resultFromRequestState
                 val latitude by latitudeState
                 val longitude by longitudeState
                 val timestamp by timeStampValue
                 val cellId by cellIdState
 
-                val showToast = Toast.makeText(
-                    this@MainActivity,
-                    "Successful Request!",
-                    Toast.LENGTH_SHORT
-                )
+                val isRunning = remember { mutableStateOf(false) }
+
+                // Dropdown setup
                 var selectedItem by remember { mutableStateOf("On foot") }
-                val items = listOf(
-                    "On foot",
-                    "Bicycle",
-                    "Motorcycle",
-                    "Car",
-                    "Bus",
-                    "Train",
-                    "VLT",
-                    "Subway",
-                    "Barca"
-                )
                 var expanded by remember { mutableStateOf(false) }
+                val items = listOf("On foot", "Bicycle", "Motorcycle", "Car", "Bus", "Train", "VLT", "Subway", "Barca")
                 val tipoTransporteMap = mapOf(
-                    "On foot" to 1,
-                    "Bicycle" to 2,
-                    "Motorcycle" to 3,
-                    "Car" to 4,
-                    "Bus" to 5,
-                    "Train" to 6,
-                    "VLT" to 7,
-                    "Subway" to 8,
-                    "Barca" to 9
+                    "On foot" to 1, "Bicycle" to 2, "Motorcycle" to 3, "Car" to 4,
+                    "Bus" to 5, "Train" to 6, "VLT" to 7, "Subway" to 8, "Barca" to 9
                 )
+
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    Column(
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .fillMaxSize(),
-                        verticalArrangement = Arrangement.Top,
-                        horizontalAlignment = Alignment.CenterHorizontally
+                    // Estado do Bloqueio de Tela
+                    var isLocked by remember { mutableStateOf(false) }
 
-                    ) {
-                        Card(
-                            modifier = Modifier.clickable { expanded = !expanded },
-                            shape = RoundedCornerShape(4.dp)
+                    // Box principal permite sobrepor elementos (Conteúdo + Bloqueio + Botão)
+                    Box(modifier = Modifier.fillMaxSize()) {
 
+                        // --- CAMADA 1: O CONTEÚDO DO APP ---
+                        Column(
+                            modifier = Modifier
+                                .padding(16.dp)
+                                .fillMaxSize()
+                                // Se bloqueado, deixa o fundo meio transparente (efeito visual)
+                                .alpha(if (isLocked) 0.3f else 1.0f),
+                            verticalArrangement = Arrangement.Top,
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text(
-                                text = "Means of transportation: $selectedItem",
-                                modifier = Modifier.padding(16.dp)
-                            )
-                        }
-                        if (expanded) {
 
-                            DropdownMenu(
-                                expanded = expanded,
-                                onDismissRequest = { expanded = false },
-                                modifier = Modifier,
-                                offset = DpOffset(
-                                    120.dp,
-                                    (-40).dp
-                                ), // Adjust the displacement as required
-                                properties = PopupProperties(focusable = true) // Adjust the properties as necessary
+                            // --- BLOCO A: CONFIGURAÇÃO DE SERVIDOR ---
+                            Card(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
                             ) {
-                                items.forEach { label ->
-                                    DropdownMenuItem(
-                                        text = { Text(text = label) },
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Text("Server Configuration", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    // Tópico Ntfy
+                                    Text("Ntfy Topic ID:", style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
+                                    BasicTextField(
+                                        value = topicState.value,
+                                        onValueChange = {
+                                            topicState.value = it
+                                            sharedPreferences.edit().putString("ntfy_topic", it.text).apply()
+                                        },
+                                        textStyle = TextStyle(color = Color.Black),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color.White)
+                                            .border(1.dp, Color.LightGray)
+                                            .padding(6.dp)
+                                    )
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    // Botão Buscar IP
+                                    Button(
                                         onClick = {
-                                            selectedItem = label
-                                            expanded =
-                                                false // Closes the menu when an item is selected
-                                            val valueInteger = tipoTransporteMap[selectedItem]
-                                            if (valueInteger != null) {
-                                                transportation.value = valueInteger
+                                            fetchIpFromNtfy(topicState.value.text) { ip ->
+                                                if (ip != null) {
+                                                    runOnUiThread {
+                                                        urlState.value = TextFieldValue(ip)
+                                                        Toast.makeText(this@MainActivity, "IP Updated: $ip", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                } else {
+                                                    runOnUiThread {
+                                                        Toast.makeText(this@MainActivity, "Failed to fetch IP", Toast.LENGTH_SHORT).show()
+                                                    }
+                                                }
                                             }
-                                        }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(36.dp),
+                                        contentPadding = PaddingValues(0.dp)
+                                    ) {
+                                        Text("Fetch IP from Ntfy", fontSize = 12.sp)
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    // URL Alvo
+                                    Text("Target URL (IPv6):", style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
+                                    BasicTextField(
+                                        value = urlState.value,
+                                        onValueChange = { urlState.value = it },
+                                        textStyle = TextStyle(color = Color.Black),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(Color.White)
+                                            .border(1.dp, Color.LightGray)
+                                            .padding(6.dp)
                                     )
                                 }
                             }
-                        }
-                        // Input field for the URL
 
-                        BasicTextField(
-                            value = urlState.value,
-                            onValueChange = {
-                                // Updates the status of the URL when the user types it in
-                                urlState.value = it
+                            // --- BLOCO B: TRANSPORTE ---
+                            Card(
+                                modifier = Modifier
+                                    .clickable { if (!isLocked) expanded = !expanded } // Só abre se não estiver bloqueado
+                                    .fillMaxWidth()
+                                    .padding(bottom = 8.dp),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFE0E0E0))
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text("Transport Mode", fontSize = 12.sp, color = Color.DarkGray)
+                                    Text(text = selectedItem, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.Black)
+                                }
+                            }
+
+                            if (expanded) {
+                                DropdownMenu(
+                                    expanded = expanded,
+                                    onDismissRequest = { expanded = false },
+                                    offset = DpOffset(0.dp, 0.dp),
+                                    properties = PopupProperties(focusable = true)
+                                ) {
+                                    items.forEach { label ->
+                                        DropdownMenuItem(
+                                            text = { Text(text = label) },
+                                            onClick = {
+                                                selectedItem = label
+                                                expanded = false
+                                                val valueInteger = tipoTransporteMap[selectedItem]
+                                                if (valueInteger != null) transportation.value = valueInteger
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            // --- BLOCO C: BOTÃO START ---
+                            Button(
+                                onClick = {
+                                    if (!isRunning.value) {
+                                        isRunning.value = true
+                                        coroutineScope.launch {
+                                            while (true) {
+                                                val url = urlState.value.text
+                                                if (url.isNotEmpty()) {
+                                                    requestLocationAndFetchData(url)
+                                                }
+                                                // Loop limpo: sem toasts aqui
+                                                delay(1000)
+                                            }
+                                        }
+                                    }
+                                },
+                                enabled = !isRunning.value, // Desabilita visualmente se já roda
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(50.dp)
+                                    .padding(vertical = 8.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isRunning.value) Color.Gray else MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Text(
+                                    text = if (isRunning.value) "RUNNING... (Collecting Data)" else "START CONTINUOUS REQUEST",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            // --- BLOCO D: MONITORAMENTO ---
+                            ScrollableContent(
+                                latitude,
+                                longitude,
+                                gpsMessage ?: "Ready to start.",
+                                timestamp,
+                                cellId
+                            )
+                        }
+
+                        // --- CAMADA 2: ESCUDO DE BLOQUEIO ---
+                        if (isLocked) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(Color.Transparent)
+                                    // Captura todos os toques para nada passar para baixo
+                                    .pointerInput(Unit) {
+                                        detectTapGestures {
+                                            // Feedback opcional se tocar na tela bloqueada
+                                            Toast.makeText(context, "Screen is Locked", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                            ) {
+                                // Aviso visual no centro da tela
+                                Text(
+                                    text = "LOCKED\nLong press button to unlock",
+                                    color = Color.Red,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    modifier = Modifier.align(Alignment.Center),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+
+                        // Estado para mudar a cor do botão enquanto segura
+                        var isHolding by remember { mutableStateOf(false) }
+
+                        LaunchedEffect(isHolding) {
+                            if (isHolding) {
+                                val actionName = if (isLocked) "UNLOCK" else "LOCK"
+
+                                Toast.makeText(context, "Hold for 3 seconds to $actionName", Toast.LENGTH_SHORT).show()
+                                delay(3000)
+                                isLocked = !isLocked
+
+                                val finalMsg = if (isLocked) "SCREEN LOCKED" else "UNLOCKED"
+
+                                Toast.makeText(context, finalMsg, Toast.LENGTH_SHORT).show()
+
+                                isHolding = false
+                            }
+                        }
+
+                        // --- BOTÃO DE COMPARTILHAR ---
+                        if (!isLocked) {
+                            FloatingActionButton(
+                                onClick = { shareCsvFile() },
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(bottom = 90.dp, end = 24.dp), // Fica acima do outro botão
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = "Share CSV")
+                            }
+                        }
+
+                        FloatingActionButton(
+                            onClick = { /* Vazio, controlado pelo pointerInput abaixo */ },
+                            containerColor = when {
+                                isHolding && !isLocked -> Color.Yellow // Amarelo enquanto segura para travar
+                                isHolding && isLocked -> Color.Yellow // Amarelo enquanto segura para destravar
+                                isLocked -> Color.Red     // Vermelho se bloqueado
+                                else -> MaterialTheme.colorScheme.primary // Azul se livre
                             },
-                            textStyle = TextStyle(color = Color.Black),
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(8.dp)
-                                .background(color = Color.White)
-                                .border(1.dp, Color.Black)
-                        )
+                                .align(Alignment.BottomEnd)
+                                .padding(24.dp)
+                                .pointerInput(Unit) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            // A. Espera o dedo tocar (DOWN)
+                                            awaitPointerEvent().changes[0].consume() // Consome o toque inicial
+                                            isHolding = true // Ativa o LaunchedEffect acima
 
+                                            // B. Espera o dedo levantar (UP) ou sair do botão
+                                            val reason = waitForUpOrCancellation()
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                                            // C. Dedo levantou: Reseta o estado
+                                            isHolding = false // Isso cancela o LaunchedEffect imediatamente (se não tiver acabado os 3s)
 
-                        // Botão para pegar IP do Ntfy
-                        Button(
-                            onClick = {
-                                fetchIpFromNtfy { ip ->
-                                    if (ip != null) {
-                                        // Atualiza a caixa de texto na Thread Principal
-                                        runOnUiThread {
-                                            urlState.value = TextFieldValue(ip)
-                                            Toast.makeText(this@MainActivity, "IP Updated: $ip", Toast.LENGTH_SHORT).show()
-                                        }
-                                    } else {
-                                        runOnUiThread {
-                                            Toast.makeText(this@MainActivity, "Failed to fetch IP", Toast.LENGTH_SHORT).show()
+                                            if (reason != null) {
+                                                // Se soltou antes de completar a ação, o LaunchedEffect foi cancelado automaticamente.
+                                                // Nenhuma ação extra necessária.
+                                            }
                                         }
                                     }
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(8.dp)
                         ) {
-                            Text("Get Server IP (Ntfy)")
-                        }
-
-                        // Botão para iniciar requisições
-                        Button(
-                            onClick = {
-                                coroutineScope.launch {
-                                    while (true) {
-                                        val url = urlState.value.text
-                                        if (url.isNotEmpty()) {
-                                            requestLocationAndFetchData(url)
-                                        }
-                                        showToast.cancel()
-                                        toastBalloon = 0
-                                        delay(1000)
-                                    }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(8.dp)
-                        ) {
-                            Text("Start Continuous Request")
-                        }
-
-                        // O BOTÃO DE DELETAR FOI REMOVIDO DAQUI
-
-                        // scrolling component to display information
-                        ScrollableContent(
-                            latitude,
-                            longitude,
-                            gpsMessage ?: "\nAwaiting response to request",
-                            timestamp,
-                            cellId
-                        )
-                        Log.d("toast", "toast: $toastBalloon")
-
-                        if (toastBalloon == 2) {
-                            showToast.show()
-                            toastBalloon = 0
-                        } else {
-                            showToast.cancel()
-
+                            Icon(
+                                imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Edit,
+                                contentDescription = "Lock Button",
+                                tint = if (isHolding) Color.Black else Color.White
+                            )
                         }
                     }
                 }
             }
         }
-
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
@@ -413,7 +547,7 @@ class MainActivity : ComponentActivity() {
         return null
     }
     private var telephonyCallback: TelephonyCallback? = null
-    
+
     @RequiresApi(Build.VERSION_CODES.S)
     fun start5GDetection(context: Context) {
         if (telephonyCallback == null) {
@@ -477,12 +611,9 @@ class MainActivity : ComponentActivity() {
             val sharedPreferences = getSharedPreferences("MyPrefs", Context.MODE_PRIVATE)
             var currentCount = sharedPreferences.getInt("count", 0)
 
-            // ADICIONADO "Hops" no cabeçalho
             if (!csvFile.exists() || csvFile.readLines().none { it.startsWith("Sequence") }) {
                 val columnNames =
-                    "Sequence, Transport, Timestamp, Latency, TTL, Hops, Latitude, Longitude, Signal_dbm, Signal_level, MCC, MNC, CellId, Tac/Lac, Mobile_Network, RSRQ, RSSNR, NRARFCN"
-
-                // REMOVIDO: sendDataToServer(columnNames, true)
+                    "Sequence,Transport,Timestamp,Latency,TTL,Hops,Latitude,Longitude,Signal_dbm,Signal_level,MCC,MNC,CellId,Tac/Lac,Mobile_Network,RSRQ,RSSNR,NRARFCN"
 
                 val writer = BufferedWriter(FileWriter(csvFile, true))
                 writer.write("$columnNames\n")
@@ -495,7 +626,6 @@ class MainActivity : ComponentActivity() {
             sharedPreferences.edit().putInt("count", newCount).apply()
 
             if (isValidData(data)) {
-                // ADICIONADO data.hops na linha
                 val csvLine =
                     "$newCount, ${data.transport}, ${data.timestamp}, ${data.latency}, ${data.ttl}, ${data.hops}, ${data.latitude}, ${data.longitude}," +
                             dataCellId.joinToString(",")
@@ -507,9 +637,6 @@ class MainActivity : ComponentActivity() {
                 writer.newLine()
                 writer.close()
 
-                // REMOVIDO: sendDataToServer(csvLine, false)
-
-                toastBalloon += 1
             } else {
                 Log.d("CurrentCount40000", "ERRROOOORR$data")
             }
@@ -538,14 +665,13 @@ class MainActivity : ComponentActivity() {
 
     // Main function responsible for obtaining data
     @RequiresApi(Build.VERSION_CODES.R)
-    private fun requestLocationAndFetchData(url: String) {
+    private fun requestLocationAndFetchData(targetUrl: String) {
 
         val permissionGranted = (
                 ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_FINE_LOCATION
                 ) == PackageManager.PERMISSION_GRANTED) &&
-
                 (ActivityCompat.checkSelfPermission(
                     this,
                     Manifest.permission.ACCESS_COARSE_LOCATION
@@ -554,47 +680,37 @@ class MainActivity : ComponentActivity() {
         if (!permissionGranted) {
             ActivityCompat.requestPermissions(
                 this,
-                arrayOf(
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                ),
+                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
                 PERMISSION_REQUEST_CODE
             )
         } else {
             val locationRequest = LocationRequest.create()
                 .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY)
-                .setInterval(5000) // Intervalo de 5 segundos para as atualizações
-                .setFastestInterval(1000) // Intervalo mais rápido de 1 segundo
+                .setInterval(5000)
+                .setFastestInterval(1000)
 
             val locationCallback = object : LocationCallback() {
                 override fun onLocationResult(locationResult: LocationResult) {
                     val lastLocation = locationResult.lastLocation
-                    val latitude = lastLocation?.latitude
-                    val longitude = lastLocation?.longitude
-                    latitudeState.value = latitude
-                    longitudeState.value = longitude
+                    latitudeState.value = lastLocation?.latitude
+                    longitudeState.value = lastLocation?.longitude
                 }
             }
 
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
 
             CoroutineScope(Dispatchers.IO).launch {
+                // Aguarda o GPS fixar
                 while (latitudeState.value == null || longitudeState.value == null) {
-                    delay(10000)
+                    delay(1000)
                 }
 
-                val url = urlState.value.text
+                val cellIdInfoList = getConnectedCellId(this@MainActivity)
 
-                // 1. Pega Latência e TTL (Ping normal)
-                val (latency, ttl) = pingHostIPv6(url)
-
-                // 2. Calcula Hops de Ida (Traceroute Manual) - ISSO PODE DEMORAR
-                val hops = calculateHops(url)
-
-                val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Falha no Ping"
-
-                runOnUiThread {
-                    resultFromRequestState.value = resultString
+                cellIdInfoList?.let { infoList ->
+                    runOnUiThread {
+                        cellIdState.value = infoList
+                    }
                 }
 
                 val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
@@ -602,52 +718,33 @@ class MainActivity : ComponentActivity() {
                     timeStampValue.value = timeStamp
                 }
 
-                val cellId = getConnectedCellId(this@MainActivity)
+                // 1. Ping IPv6
+                val (latency, ttl) = pingHostIPv6(targetUrl)
 
-                cellId?.let {
-                    runOnUiThread {
-                        cellIdState.value = it[2]
-                    }
+                // 2. Hops
+                val hops = calculateHops(targetUrl)
+                val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Ping Failed"
+
+                runOnUiThread {
+                    resultFromRequestState.value = resultString
+                }
+
+                cellIdInfoList?.let { infoList ->
+                    // Validação de segurança para evitar crash se a lista for curta
+                    val cellIdReal = if (infoList.size > 4) infoList[4] else 0
 
                     val dataModel = DataModel(
                         transportation.value,
                         timeStampValue.value,
-                        cellIdState.value,
+                        cellIdReal,
                         latency,
                         ttl,
-                        hops, // <--- Passando o novo valor de Hops
+                        hops,
                         latitudeState.value ?: 0.0,
                         longitudeState.value ?: 0.0,
                     )
-                    saveDataToCSV(dataModel, it)
+                    saveDataToCSV(dataModel, infoList)
                 }
-            }
-        }
-    }
-
-
-
-    // Function that shows Hello, World on the screen
-    @Composable
-    fun Greeting(name: String, result: String?) {
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp)
-        ) {
-            Text(
-                text = "Hello, $name!",
-                modifier = Modifier.padding(bottom = 8.dp),
-                style = MaterialTheme.typography.headlineMedium
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-            if (result != null) {
-                Text(
-                    text = result,
-                    style = MaterialTheme.typography.bodySmall
-                )
             }
         }
     }
@@ -659,8 +756,17 @@ class MainActivity : ComponentActivity() {
         longitude: Double?,
         result: String,
         tempo: String,
-        cid: Any
+        cid: Any // Espera uma Lista
     ) {
+        // Tenta converter o objeto Any para uma Lista
+        val cellInfoList = cid as? List<*>
+
+        // Extrai dados com segurança. Se falhar, mostra "N/A"
+        // Índice 0 = dBm (Sinal), Índice 4 = Cell ID (Geralmente)
+        val signalDbm = cellInfoList?.getOrNull(0) ?: "N/A"
+        val cellIdentity = cellInfoList?.getOrNull(4) ?: "N/A"
+        val rsrq = cellInfoList?.getOrNull(7) ?: "-"
+        val sinr = cellInfoList?.getOrNull(8) ?: "-"
 
         LazyColumn(
             modifier = Modifier
@@ -668,24 +774,33 @@ class MainActivity : ComponentActivity() {
                 .padding(16.dp)
         ) {
             item {
-                latitude?.let { lat ->
-                    longitude?.let { lon ->
-                        Text(
-                            text = "Latitude: $lat\nLongitude: $lon\nTimestamp: $tempo\nCellId: $cid",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                // --- STATUS CARD ---
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text("Latitude: $latitude")
+                        Text("Longitude: $longitude")
+                        Text("Cell ID: $cellIdentity")
+                        Text("RSRP (Signal): $signalDbm dBm")
+                        Text("SINR (Noise) $sinr dB")
+                        Text("RSRQ: $rsrq dB")
+                        Text("Timestamp: $tempo")
                     }
                 }
-                Greeting("world", result)
-            }
-        }
-    }
 
-    @Preview(showBackground = true)
-    @Composable
-    fun GreetingPreview() {
-        WolfClientTheme {
-            Greeting("World", "Sample Result")
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // --- PING RESULT ---
+                Text(
+                    text = result,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = if (result.contains("Failed") || result.contains("timeout")) Color.Red else MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.padding(top = 4.dp),
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 
@@ -707,7 +822,6 @@ class MainActivity : ComponentActivity() {
                 val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
                 var line: String?
                 while (reader.readLine().also { line = it } != null) {
-                    // Exemplo de saída: "64 bytes from ... ttl=118 time=22.5 ms"
 
                     // Extrair Latência
                     if (line!!.contains("time=")) {
@@ -736,14 +850,10 @@ class MainActivity : ComponentActivity() {
         // Tenta TTL de 1 até 30
         for (ttl in 1..30) {
             try {
-                // -c 1 (1 pacote), -w 1 (wait 1s), -t (TTL/HopLimit)
-                // Nota: Alguns Androids usam -t, outros -h. O padrão costuma ser -t.
                 val cmd = "ping6 -c 1 -w 1 -t $ttl $host"
                 val process = Runtime.getRuntime().exec(cmd)
                 val exitValue = process.waitFor()
 
-                // Se exitValue for 0, significa que chegou no destino (Echo Reply)
-                // Se for diferente (ex: Time Exceeded), ainda não chegou
                 if (exitValue == 0) {
                     return ttl // Encontrou o número de saltos para chegar
                 }
@@ -755,48 +865,133 @@ class MainActivity : ComponentActivity() {
     }
 
     // Função para pegar IP do Ntfy (Histórico Recente)
-    private fun fetchIpFromNtfy(callback: (String?) -> Unit) {
-        val client = OkHttpClient()
-        // Use BuildConfig.NTFY_TOPIC se tiver configurado, ou a string direta
-        val topic = ""
+    private fun fetchIpFromNtfy(topicRaw: String, callback: (String?) -> Unit) {
+        val topic = topicRaw.trim()
 
-        // MUDANÇA 1: Adicionado parâmetros para pegar apenas a ÚLTIMA mensagem do histórico
+        if (topic.isEmpty()) {
+            Log.e("WolfDebug", "ERRO: O tópico está vazio!")
+            callback(null)
+            return
+        }
+
+        val client = OkHttpClient.Builder()
+            .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+
+        val url = "https://ntfy.sh/$topic/raw?since=all&limit=5&poll=1"
+
+        Log.d("WolfDebug", "Conectando em: $url")
+
         val request = Request.Builder()
-            .url("https://ntfy.sh/$topic/raw?since=all&limit=1")
+            .url(url)
             .build()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
+                Log.e("WolfDebug", "FALHA TOTAL: ${e.message}")
                 e.printStackTrace()
-                // Falha na rede
                 callback(null)
             }
 
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!it.isSuccessful) {
+                        Log.e("WolfDebug", "Erro do Servidor: ${it.code}")
                         callback(null)
-                    } else {
-                        // MUDANÇA 2: Tratamento de String robusto
-                        // Pega o corpo, remove espaços em branco nas pontas
-                        val fullBody = it.body?.string()?.trim()
+                        return
+                    }
 
-                        // Se por acaso vierem múltiplas linhas, pega a última que não esteja vazia
-                        // Isso protege caso o ntfy mande "IP_VELHO\nIP_NOVO"
-                        val lastLine = fullBody?.lines()?.lastOrNull { line -> line.isNotBlank() }?.trim()
+                    try {
+                        val rawBody = it.body?.string() ?: ""
+                        Log.d("WolfDebug", "Resposta recebida: $rawBody")
 
-                        // Validação: Só aceita se tiver ":" (característica do IPv6) e não for erro
-                        if (lastLine != null && lastLine.contains(":")) {
-                            Log.d("WolfClient", "IP Recebido: $lastLine")
-                            callback(lastLine)
+                        // Filtra linhas que parecem IPv6 (tem dois pontos :)
+                        val lastValidIp = rawBody.lines()
+                            .filter { line -> line.contains(":") }
+                            .lastOrNull { line -> line.isNotBlank() }
+                            ?.trim()
+
+                        if (lastValidIp != null) {
+                            Log.d("WolfDebug", "IP VALIDADO: $lastValidIp")
+                            callback(lastValidIp)
                         } else {
-                            Log.d("WolfClient", "Resposta inválida ou vazia: $fullBody")
+                            Log.e("WolfDebug", "Nenhum IP encontrado no texto.")
                             callback(null)
                         }
+
+                    } catch (e: Exception) {
+                        Log.e("WolfDebug", "Erro ao processar texto: ${e.message}")
+                        e.printStackTrace()
+                        callback(null)
                     }
                 }
             }
         })
+    }
+
+    private fun shareCsvFile() {
+        val csvFileName = "clientdata.csv"
+        val exportName = "clientdata_export.csv"
+
+        val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
+        val sourceFile = File(baseDir, csvFileName)
+        val destFile = File(baseDir, exportName) // Cria a cópia na mesma pasta
+
+        if (sourceFile.exists()) {
+            try {
+                // 1. CRIA UMA CÓPIA SEGURA (SNAPSHOT)
+                // O overwrite=true substitui a exportação anterior, evitando o "-1" no lado do seu app
+                sourceFile.copyTo(destFile, overwrite = true)
+
+                // 2. GERA A URI A PARTIR DA CÓPIA
+                val uri = FileProvider.getUriForFile(
+                    this,
+                    "${applicationContext.packageName}.provider",
+                    destFile // Compartilha o destFile, não o sourceFile
+                )
+
+                val intent = Intent(Intent.ACTION_SEND)
+                intent.type = "text/csv"
+                intent.putExtra(Intent.EXTRA_STREAM, uri)
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+
+                startActivity(Intent.createChooser(intent, "Share Data"))
+
+            } catch (e: Exception) {
+                // Se der erro (ex: arquivo em uso extremo), avisa o usuário
+                Toast.makeText(this, "Error preparing file: ${e.message}", Toast.LENGTH_SHORT).show()
+                e.printStackTrace()
+            }
+        } else {
+            Toast.makeText(this, "No data collected yet!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun checkStoragePermission() {
+        // Só precisa dessa permissão especial no Android 11 (R) ou superior
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                    intent.addCategory("android.intent.category.DEFAULT")
+                    intent.data = Uri.parse(String.format("package:%s", applicationContext.packageName))
+                    startActivityForResult(intent, 2296)
+                } catch (e: Exception) {
+                    val intent = Intent()
+                    intent.action = Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                    startActivityForResult(intent, 2296)
+                }
+                Toast.makeText(this, "Please allow 'All Files Access' to save CSV", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            // Para Android 10 e anteriores, o código de permissão padrão já lida com isso
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE, Manifest.permission.READ_EXTERNAL_STORAGE),
+                PERMISSION_REQUEST_CODE
+            )
+        }
     }
 
 
