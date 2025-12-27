@@ -108,6 +108,7 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("NewApi")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         // Inicia a detecção de 5G
         start5GDetection(this)
@@ -221,11 +222,32 @@ class MainActivity : ComponentActivity() {
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        // Button to trigger the request
+                        // Botão para pegar IP do Ntfy
+                        Button(
+                            onClick = {
+                                fetchIpFromNtfy { ip ->
+                                    if (ip != null) {
+                                        // Atualiza a caixa de texto na Thread Principal
+                                        runOnUiThread {
+                                            urlState.value = TextFieldValue(ip)
+                                            Toast.makeText(this@MainActivity, "IP Updated: $ip", Toast.LENGTH_SHORT).show()
+                                        }
+                                    } else {
+                                        runOnUiThread {
+                                            Toast.makeText(this@MainActivity, "Failed to fetch IP", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth().padding(8.dp)
+                        ) {
+                            Text("Get Server IP (Ntfy)")
+                        }
+
+                        // Botão para iniciar requisições
                         Button(
                             onClick = {
                                 coroutineScope.launch {
-                                    // Infinite loop to make the request every second
                                     while (true) {
                                         val url = urlState.value.text
                                         if (url.isNotEmpty()) {
@@ -233,28 +255,16 @@ class MainActivity : ComponentActivity() {
                                         }
                                         showToast.cancel()
                                         toastBalloon = 0
-                                        delay(1000) // Waits 1 second before the next request
+                                        delay(1000)
                                     }
                                 }
                             },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(8.dp)
+                            modifier = Modifier.fillMaxWidth().padding(8.dp)
                         ) {
                             Text("Start Continuous Request")
                         }
-                        Button(
-                            onClick = {
-                                // Call the function to delete the CSV file
-                                deleteCSVFile()
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(8.dp)
-                        ) {
-                            Text("Delete CSV File")
-                        }
 
+                        // O BOTÃO DE DELETAR FOI REMOVIDO DAQUI
 
                         // scrolling component to display information
                         ScrollableContent(
@@ -283,21 +293,9 @@ class MainActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onDestroy() {
         super.onDestroy()
+        window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Para a detecção de 5G para evitar leaks
         stop5GDetection(this)
-    }
-
-    private fun deleteCSVFile() {
-        val csvFileName = "clientdata.csv"
-
-        // Directory path and CSV file
-        val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
-        val csvFile = File(baseDir, csvFileName)
-
-        // Try deleting the CSV file
-        if (csvFile.exists()) {
-            val deleted = csvFile.delete()
-        }
     }
 
 
@@ -415,7 +413,7 @@ class MainActivity : ComponentActivity() {
         return null
     }
     private var telephonyCallback: TelephonyCallback? = null
-
+    
     @RequiresApi(Build.VERSION_CODES.S)
     fun start5GDetection(context: Context) {
         if (telephonyCallback == null) {
@@ -465,15 +463,13 @@ class MainActivity : ComponentActivity() {
         return nsa
     }
 
+    @Synchronized
     private fun saveDataToCSV(data: DataModel, dataCellId: MutableList<Any>) {
         val csvFileName = "clientdata.csv"
-
-        // CSV storage directory
         val baseDir = File(Environment.getExternalStorageDirectory().absolutePath + "/Documents")
         val csvFile = File(baseDir, csvFileName)
 
         try {
-            // Checks if the directory exists and creates it if it doesn't
             if (!baseDir.exists()) {
                 baseDir.mkdirs()
             }
@@ -481,55 +477,42 @@ class MainActivity : ComponentActivity() {
             val sharedPreferences = getSharedPreferences("MyPrefs", Context.MODE_PRIVATE)
             var currentCount = sharedPreferences.getInt("count", 0)
 
+            // ADICIONADO "Hops" no cabeçalho
             if (!csvFile.exists() || csvFile.readLines().none { it.startsWith("Sequence") }) {
                 val columnNames =
-                    "Sequence, Transport, Timestamp, Latency, Latitude, Longitude, Signal_dbm, Signal_level, MCC, MNC, CellId, Tac/Lac, Mobile_Network, RSRQ, RSSNR, NRARFCN"
-                sendDataToServer(columnNames, true)
-                // Opens the writer for the CSV file
-                val writer = BufferedWriter(FileWriter(csvFile, true))
+                    "Sequence, Transport, Timestamp, Latency, TTL, Hops, Latitude, Longitude, Signal_dbm, Signal_level, MCC, MNC, CellId, Tac/Lac, Mobile_Network, RSRQ, RSSNR, NRARFCN"
 
-                // Write the column names in the first line
+                // REMOVIDO: sendDataToServer(columnNames, true)
+
+                val writer = BufferedWriter(FileWriter(csvFile, true))
                 writer.write("$columnNames\n")
                 writer.close()
-
-                // If the CSV file doesn't exist, restart the count
                 currentCount = 0
-
-
             }
 
-                // Opens the writer for the CSV file
+            val existingCount = currentCount
+            val newCount = existingCount + 1
+            sharedPreferences.edit().putInt("count", newCount).apply()
 
+            if (isValidData(data)) {
+                // ADICIONADO data.hops na linha
+                val csvLine =
+                    "$newCount, ${data.transport}, ${data.timestamp}, ${data.latency}, ${data.ttl}, ${data.hops}, ${data.latitude}, ${data.longitude}," +
+                            dataCellId.joinToString(",")
 
-                // Gets the existing count
-                val existingCount = currentCount
-                // Increases the count
-                val newCount = existingCount + 1
-                // Updates the count in shared preferences
-                sharedPreferences.edit().putInt("count", newCount).apply()
+                Log.d("CurrentCount4", "Line: $csvLine")
 
-                // Checks that the mandatory fields of the DataModel are not empty and that there is CellId data
-                if (isValidData(data)) {
-                    // Build a formatted CSV line
-                    val csvLine =
-                        "$newCount, ${data.transport}, ${data.timestamp}, ${data.latency},${data.latitude},${data.longitude}," +
-                                dataCellId.joinToString(",")
+                val writer = BufferedWriter(FileWriter(csvFile, true))
+                writer.write(csvLine)
+                writer.newLine()
+                writer.close()
 
-                    // Write the line to the file
-                    Log.d("CurrentCount4", "Line: $csvLine")
+                // REMOVIDO: sendDataToServer(csvLine, false)
 
-                    val writer = BufferedWriter(FileWriter(csvFile, true))
-
-                    writer.write(csvLine)
-                    writer.newLine() // Adds a line break to the next entry
-                    // The writer closes
-                    writer.close()
-                    sendDataToServer(csvLine, false) // It's not the first line
-                    toastBalloon += 1
-                } else {
-                    Log.d("CurrentCount40000", "ERRROOOORR$data")
-
-                }
+                toastBalloon += 1
+            } else {
+                Log.d("CurrentCount40000", "ERRROOOORR$data")
+            }
 
         } catch (e: IOException) {
             e.printStackTrace()
@@ -596,37 +579,47 @@ class MainActivity : ComponentActivity() {
             fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, Looper.getMainLooper())
 
             CoroutineScope(Dispatchers.IO).launch {
-
-                // Aguarde até que as coordenadas de latitude e longitude estejam disponíveis
                 while (latitudeState.value == null || longitudeState.value == null) {
                     delay(10000)
                 }
 
-                val sizeResponse = sizeResponseState.value
-                makeRequest(url, sizeResponse, 5000) { result ->
+                val url = urlState.value.text
 
-                    val (resultRequest, latency) = result // Dismantling the Pair
+                // 1. Pega Latência e TTL (Ping normal)
+                val (latency, ttl) = pingHostIPv6(url)
 
-                    resultRequest?.let {
-                        resultFromRequestState.value = it
-                    }
-                    val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
-                    timeStamp.let {
-                        timeStampValue.value = it
-                    }
-                    val cellId = getConnectedCellId(this@MainActivity)
-                    cellId?.let {
+                // 2. Calcula Hops de Ida (Traceroute Manual) - ISSO PODE DEMORAR
+                val hops = calculateHops(url)
+
+                val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Falha no Ping"
+
+                runOnUiThread {
+                    resultFromRequestState.value = resultString
+                }
+
+                val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
+                runOnUiThread {
+                    timeStampValue.value = timeStamp
+                }
+
+                val cellId = getConnectedCellId(this@MainActivity)
+
+                cellId?.let {
+                    runOnUiThread {
                         cellIdState.value = it[2]
-                        val dataModel = DataModel(
-                            transportation.value,
-                            timeStampValue.value,
-                            cellIdState.value,
-                            latency,
-                            latitudeState.value ?: 0.0,
-                            longitudeState.value ?: 0.0,
-                        )
-                        saveDataToCSV(dataModel, it)
                     }
+
+                    val dataModel = DataModel(
+                        transportation.value,
+                        timeStampValue.value,
+                        cellIdState.value,
+                        latency,
+                        ttl,
+                        hops, // <--- Passando o novo valor de Hops
+                        latitudeState.value ?: 0.0,
+                        longitudeState.value ?: 0.0,
+                    )
+                    saveDataToCSV(dataModel, it)
                 }
             }
         }
@@ -697,91 +690,111 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    // Function to make an HTTP GET request
-    private fun makeRequest(
-        ip: String,
-        sizeResponse: Int,
-        port: Int,
-        callback: (Pair<String?, Long>) -> Unit // Change in callback type to receive a Pair
-    ) {
-        val client = OkHttpClient()
-        val url = HttpUrl.Builder()
-            .scheme("http")
-            .port(port)
-            .host(ip)
-            .build()
+    // Função nova para Ping IPv6 com captura de TTL
+    private fun pingHostIPv6(url: String): Pair<Long, Int> {
+        var delay = -1L
+        var ttl = -1
+        try {
+            // Limpeza da URL para extrair apenas o host
+            var host = url.replace("http://", "").replace("https://", "").split("/")[0]
+            host = host.replace("[", "").replace("]", "") // Remove colchetes de IPv6 se houver
 
-        val request = Request.Builder()
-            .url(url)
-            .get()
-            .build()
+            // Executa: ping6 -c 1 (1 pacote) -w 2 (timeout 2s)
+            val process = Runtime.getRuntime().exec("ping6 -c 1 -w 2 $host")
+            val exitValue = process.waitFor()
 
-        val startTime = System.currentTimeMillis()
-        client.newCall(request).enqueue(object : Callback {
+            if (exitValue == 0) {
+                val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+                var line: String?
+                while (reader.readLine().also { line = it } != null) {
+                    // Exemplo de saída: "64 bytes from ... ttl=118 time=22.5 ms"
 
-            override fun onFailure(call: Call, e: IOException) {
-                val errorMessage = "Request failure: ${e.message}"
-                Log.e("RequestFailure", errorMessage)
-                // showing error using toast
-                runOnUiThread {
-                    Toast.makeText(applicationContext, errorMessage, Toast.LENGTH_SHORT).show()
-                }
-                callback(Pair(null, 0)) // Returning a Pair with null values in case of failure
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                val endTime = System.currentTimeMillis()
-                val responseBody = response.body?.string()
-                val latency = endTime - startTime
-                Log.d("RequestHTTP", "Latency: $latency ms")
-                toastBalloon = 1
-                val result = responseBody?.let {
-
-                    if (sizeResponse > 0 && sizeResponse < it.length) {
-                        it.substring(0, sizeResponse)
-                    } else {
-                        it
+                    // Extrair Latência
+                    if (line!!.contains("time=")) {
+                        val timePart = line!!.split("time=")[1].split(" ")[0]
+                        delay = timePart.toFloat().toLong()
+                    }
+                    // Extrair TTL
+                    if (line!!.contains("ttl=")) {
+                        val ttlPart = line!!.split("ttl=")[1].split(" ")[0]
+                        ttl = ttlPart.toInt()
                     }
                 }
-                callback(Pair(result, latency)) // Returning a Pair with the results
+                reader.close()
             }
-        })
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return Pair(delay, ttl)
     }
 
-    // Function for sending data to the server
-    private fun sendDataToServer(csvLine: String, isFirstLine: Boolean) {
+    // Função para calcular Hops de Ida (Traceroute Manual)
+    private fun calculateHops(url: String): Int {
+        var host = url.replace("http://", "").replace("https://", "").split("/")[0]
+        host = host.replace("[", "").replace("]", "")
 
-        val serverURL = HttpUrl.Builder()
-            .scheme("http")
-            .port(5000)
-            .host(urlState.value.text)
-            .build()
+        // Tenta TTL de 1 até 30
+        for (ttl in 1..30) {
+            try {
+                // -c 1 (1 pacote), -w 1 (wait 1s), -t (TTL/HopLimit)
+                // Nota: Alguns Androids usam -t, outros -h. O padrão costuma ser -t.
+                val cmd = "ping6 -c 1 -w 1 -t $ttl $host"
+                val process = Runtime.getRuntime().exec(cmd)
+                val exitValue = process.waitFor()
 
+                // Se exitValue for 0, significa que chegou no destino (Echo Reply)
+                // Se for diferente (ex: Time Exceeded), ainda não chegou
+                if (exitValue == 0) {
+                    return ttl // Encontrou o número de saltos para chegar
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        return -1 // Não alcançou o destino em 30 saltos ou erro
+    }
+
+    // Função para pegar IP do Ntfy (Histórico Recente)
+    private fun fetchIpFromNtfy(callback: (String?) -> Unit) {
         val client = OkHttpClient()
+        // Use BuildConfig.NTFY_TOPIC se tiver configurado, ou a string direta
+        val topic = ""
 
-        val requestBody = FormBody.Builder()
-            .add("csvLine", csvLine)
-            .add(
-                "isFirstLine",
-                isFirstLine.toString()
-            ) // Adds a flag to indicate if it is the first line
-            .build()
-
+        // MUDANÇA 1: Adicionado parâmetros para pegar apenas a ÚLTIMA mensagem do histórico
         val request = Request.Builder()
-            .url(serverURL)
-            .post(requestBody)
+            .url("https://ntfy.sh/$topic/raw?since=all&limit=1")
             .build()
 
         client.newCall(request).enqueue(object : Callback {
-            override fun onResponse(call: Call, response: Response) {
-                if (response.isSuccessful) {
-                    // The server response was successful
-                    // Here you can deal with the success of the update on the server
-                }
+            override fun onFailure(call: Call, e: IOException) {
+                e.printStackTrace()
+                // Falha na rede
+                callback(null)
             }
 
-            override fun onFailure(call: Call, e: IOException) {
-                // Failed to send data to the server
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!it.isSuccessful) {
+                        callback(null)
+                    } else {
+                        // MUDANÇA 2: Tratamento de String robusto
+                        // Pega o corpo, remove espaços em branco nas pontas
+                        val fullBody = it.body?.string()?.trim()
+
+                        // Se por acaso vierem múltiplas linhas, pega a última que não esteja vazia
+                        // Isso protege caso o ntfy mande "IP_VELHO\nIP_NOVO"
+                        val lastLine = fullBody?.lines()?.lastOrNull { line -> line.isNotBlank() }?.trim()
+
+                        // Validação: Só aceita se tiver ":" (característica do IPv6) e não for erro
+                        if (lastLine != null && lastLine.contains(":")) {
+                            Log.d("WolfClient", "IP Recebido: $lastLine")
+                            callback(lastLine)
+                        } else {
+                            Log.d("WolfClient", "Resposta inválida ou vazia: $fullBody")
+                            callback(null)
+                        }
+                    }
+                }
             }
         })
     }
@@ -796,6 +809,10 @@ class MainActivity : ComponentActivity() {
         val cellId: Any,
         @CsvBindByName(column = "Latência")
         val latency: Long,
+        @CsvBindByName(column = "TTL")
+        val ttl: Int,
+        @CsvBindByName(column = "Hops")
+        val hops: Int,
         @CsvBindByName(column = "Latitude")
         val latitude: Double,
         @CsvBindByName(column = "Longitude")
