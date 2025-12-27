@@ -676,55 +676,64 @@ class MainActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.R)
     private suspend fun requestLocationAndFetchData(targetUrl: String) {
 
-        // Aguarda ter GPS pelo menos uma vez (para não gravar 0.0)
-        // O listener 'startActiveLocationUpdates' está rodando em background atualizando essa variável
+        // Verificação rápida de UI (pode ficar na thread principal)
         if (latitudeState.value == 0.0) {
-            withContext(Dispatchers.Main) {
-                resultFromRequestState.value = "Waiting for GPS Fix..."
-            }
+            resultFromRequestState.value = "Waiting for GPS Fix..."
             return
         }
 
-        // 1. Pega dados da Torre
-        val cellIdInfoList = getConnectedCellId(this@MainActivity)
+        // --- MUDANÇA CRUCIAL: Movemos todo o trabalho pesado para Dispatchers.IO ---
+        withContext(Dispatchers.IO) {
 
-        cellIdInfoList?.let { infoList ->
-            withContext(Dispatchers.Main) {
-                cellIdState.value = infoList
+            // 1. Pega dados da Torre (Pesado - leitura de hardware)
+            val cellIdInfoList = getConnectedCellId(this@MainActivity)
+
+            // Atualiza UI (Volta rápido pra Main só pra setar valor)
+            if (cellIdInfoList != null) {
+                withContext(Dispatchers.Main) {
+                    cellIdState.value = cellIdInfoList
+                }
             }
-        }
 
-        val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
-        withContext(Dispatchers.Main) {
-            timeStampValue.value = timeStamp
-        }
+            val timeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
+            withContext(Dispatchers.Main) {
+                timeStampValue.value = timeStamp
+            }
 
-        // 2. Testes de Rede (Ping/Hops)
-        // Feitos em thread separada (Dispatchers.IO) já que estamos em uma coroutine
-        val (latency, ttl) = pingHostIPv6(targetUrl)
-        val hops = calculateHops(targetUrl)
+            // 2. Testes de Rede (Ping/Hops) - EXTREMAMENTE BLOQUEANTE
+            // Agora isso roda em background e deixa o Dropdown funcionar
+            val (latency, ttl) = pingHostIPv6(targetUrl)
+            val hops = calculateHops(targetUrl)
 
-        val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Ping Failed"
+            val resultString = if (latency >= 0) "Ping: ${latency}ms (TTL=$ttl, Hops=$hops)" else "Ping Failed"
 
-        withContext(Dispatchers.Main) {
-            resultFromRequestState.value = resultString
-        }
+            // Atualiza o texto do resultado na UI
+            withContext(Dispatchers.Main) {
+                resultFromRequestState.value = resultString
+            }
 
-        // 3. Salva no CSV
-        cellIdInfoList?.let { infoList ->
-            val cellIdReal = if (infoList.size > 4) infoList[4] else 0
+            // 3. Salva no CSV (Operação de Arquivo - IO)
+            cellIdInfoList?.let { infoList ->
+                val cellIdReal = if (infoList.size > 4) infoList[4] else 0
 
-            val dataModel = DataModel(
-                transportation.value,
-                timeStampValue.value,
-                cellIdReal,
-                latency,
-                ttl,
-                hops,
-                latitudeState.value ?: 0.0,
-                longitudeState.value ?: 0.0,
-            )
-            saveDataToCSV(dataModel, infoList)
+                // Captura valores de latitude/longitude da UI de forma segura antes de salvar
+                // (Precisamos ler state values na main thread ou de variaveis locais,
+                // aqui acessamos via getters thread-safe do state, mas o ideal é ler snapshot)
+                val currentLat = latitudeState.value ?: 0.0
+                val currentLon = longitudeState.value ?: 0.0
+
+                val dataModel = DataModel(
+                    transportation.value,
+                    timeStamp, // Usa a variavel local, não o state
+                    cellIdReal,
+                    latency,
+                    ttl,
+                    hops,
+                    currentLat,
+                    currentLon,
+                )
+                saveDataToCSV(dataModel, infoList)
+            }
         }
     }
 
