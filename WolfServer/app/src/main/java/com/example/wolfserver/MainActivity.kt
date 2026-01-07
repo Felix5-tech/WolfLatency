@@ -7,6 +7,7 @@ package com.example.wolfserver
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -23,6 +24,12 @@ import android.telephony.*
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
+
+// Imports de Imersão
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.annotation.RequiresApi
@@ -30,8 +37,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.layout.* import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -39,8 +45,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.* import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -66,30 +71,33 @@ import java.io.FileWriter
 import java.io.IOException
 import java.net.Inet6Address
 import java.net.NetworkInterface
+import java.net.ServerSocket
 import java.text.SimpleDateFormat
 import java.util.Date
 
 class MainActivity : ComponentActivity() {
 
-    // Variáveis de Estado (Para atualizar a UI)
+    // Variáveis de Estado
     private val nsa = mutableStateOf(false)
     private val latitudeState = mutableStateOf(0.0)
     private val longitudeState = mutableStateOf(0.0)
-    private val cellIdState = mutableStateOf("N/A")
+    private val cellIdState = mutableStateOf("Waiting Request...")
     private val signalDbmState = mutableStateOf("N/A")
     private val signalLevelState = mutableStateOf("N/A")
     private val rsrqState = mutableStateOf("-")
-    private val rssnrState = mutableStateOf("-") // SINR
+    private val rssnrState = mutableStateOf("-")
     private val timestampState = mutableStateOf(" ")
+
+    private val serverStatusState = mutableStateOf("HTTP Server: Stopped")
 
     private val currentTopicState = mutableStateOf("")
     private val scope = CoroutineScope(Dispatchers.IO)
 
-    // Listener de GPS para manter os dados frescos
     private var locationListener: LocationListener? = null
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1000
+        private const val SERVER_PORT = 8080
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
@@ -99,12 +107,12 @@ class MainActivity : ComponentActivity() {
 
         requestAllPermissions()
         start5GDetection(this)
-
-        // --- NOVO: Força o GPS a acordar ---
         startActiveLocationUpdates()
 
-        startContinuousCollection()
+        // REMOVIDO: startContinuousCollection() -> Agora coleta sob demanda
+
         startIpBroadcaster()
+        startSimpleHttpServer()
 
         setContent {
             val context = LocalContext.current
@@ -120,9 +128,23 @@ class MainActivity : ComponentActivity() {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     var isLocked by remember { mutableStateOf(false) }
 
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    // --- MODO IMERSIVO ---
+                    val window = (context as? Activity)?.window
+                    val insetsController = remember(window) {
+                        window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+                    }
 
-                        // --- CAMADA 1: CONTEÚDO ---
+                    LaunchedEffect(isLocked) {
+                        if (isLocked) {
+                            insetsController?.hide(WindowInsetsCompat.Type.systemBars())
+                            insetsController?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        } else {
+                            insetsController?.show(WindowInsetsCompat.Type.systemBars())
+                        }
+                    }
+
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // --- CONTEÚDO ---
                         Column(
                             modifier = Modifier
                                 .padding(16.dp)
@@ -131,11 +153,11 @@ class MainActivity : ComponentActivity() {
                             verticalArrangement = Arrangement.Top,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            // --- CARD DE CONFIGURAÇÃO (SERVER) ---
+                            // --- CONFIGURAÇÃO ---
                             Card(
                                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                                 shape = RoundedCornerShape(8.dp),
-                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0)) // Cinza claro padrão
+                                colors = CardDefaults.cardColors(containerColor = Color(0xFFF0F0F0))
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
                                     Text("Server Configuration", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.Black)
@@ -159,6 +181,7 @@ class MainActivity : ComponentActivity() {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text("Device IPv6:", style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
                                             Text(text = currentIp, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF006400))
+                                            Text(text = serverStatusState.value, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = Color.Blue)
                                         }
                                         IconButton(onClick = {
                                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -184,12 +207,9 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            // LazyColumn ocupando o resto da tela
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize()
-                            ) {
+                            // --- STATUS CARD (EVENT DRIVEN) ---
+                            LazyColumn(modifier = Modifier.fillMaxSize()) {
                                 item {
-                                    // --- STATUS CARD (Igualzinho ao Cliente) ---
                                     Card(
                                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                                         shape = RoundedCornerShape(8.dp)
@@ -201,15 +221,13 @@ class MainActivity : ComponentActivity() {
                                             Text("RSRP (Signal): ${signalDbmState.value} dBm")
                                             Text("SINR (Noise) ${rssnrState.value} dB")
                                             Text("RSRQ: ${rsrqState.value} dB")
-                                            Text("Timestamp: ${timestampState.value}")
+                                            Text("Last Request: ${timestampState.value}")
                                         }
                                     }
 
                                     Spacer(modifier = Modifier.height(16.dp))
 
-                                    // --- RESULT TEXT (No lugar do Ping, mostramos o Status da Rede) ---
                                     val resultText = if(nsa.value) "Network: 5G NSA (Detected)" else "Network: LTE / Legacy"
-
                                     Text(
                                         text = resultText,
                                         style = MaterialTheme.typography.bodyLarge,
@@ -221,14 +239,14 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        // --- CAMADA 2: BLOQUEIO ---
+                        // --- BLOQUEIO ---
                         if (isLocked) {
                             Box(modifier = Modifier.fillMaxSize().background(Color.Transparent).pointerInput(Unit) { detectTapGestures { Toast.makeText(context, "Screen is Locked", Toast.LENGTH_SHORT).show() } }) {
                                 Text(text = "LOCKED\nLong press button to unlock", color = Color.Red, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Center), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                             }
                         }
 
-                        // --- CAMADA 3: BOTÕES ---
+                        // --- BOTÕES ---
                         var isHolding by remember { mutableStateOf(false) }
                         LaunchedEffect(isHolding) {
                             if (isHolding) {
@@ -278,24 +296,54 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun startContinuousCollection() {
-        scope.launch {
-            while (true) {
-                captureCellInfo(this@MainActivity)
-                delay(1000)
+    private fun startSimpleHttpServer() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val serverSocket = ServerSocket(SERVER_PORT, 50, java.net.InetAddress.getByName("::"))
+                Log.d("WolfServer", "HTTP Server started on port $SERVER_PORT")
+                serverStatusState.value = "HTTP Server: Running (Port $SERVER_PORT)"
+
+                while (true) {
+                    try {
+                        val client = serverSocket.accept()
+                        launch {
+                            try {
+                                val out = java.io.PrintWriter(client.getOutputStream(), true)
+                                val `in` = java.io.BufferedReader(java.io.InputStreamReader(client.getInputStream()))
+                                val request = `in`.readLine()
+
+                                // --- AQUI É O PULO DO GATO ---
+                                // Recebeu requisição? Grava no CSV imediatamente!
+                                captureCellInfo(this@MainActivity)
+                                // -----------------------------
+
+                                out.print("HTTP/1.1 200 OK\r\n")
+                                out.print("Content-Type: text/plain\r\n")
+                                out.print("Content-Length: 2\r\n")
+                                out.print("Connection: close\r\n")
+                                out.print("\r\n")
+                                out.print("OK")
+                                out.flush()
+                                client.close()
+                                Log.d("WolfServer", "Served request from ${client.inetAddress.hostAddress}")
+                            } catch (e: Exception) { e.printStackTrace() }
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                }
+            } catch (e: Exception) {
+                Log.e("WolfServer", "Error starting HTTP server: ${e.message}")
+                serverStatusState.value = "HTTP Server: ERROR (Port busy?)"
             }
         }
     }
 
-    // --- NOVO: Função para ativar o GPS de verdade ---
+    // Removido startContinuousCollection pois agora é por evento
+
     private fun startActiveLocationUpdates() {
         val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-
         if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-
             locationListener = object : LocationListener {
                 override fun onLocationChanged(location: Location) {
-                    // Atualiza o estado da UI imediatamente quando o GPS mudar
                     latitudeState.value = location.latitude
                     longitudeState.value = location.longitude
                 }
@@ -303,28 +351,14 @@ class MainActivity : ComponentActivity() {
                 override fun onProviderEnabled(provider: String) {}
                 override fun onProviderDisabled(provider: String) {}
             }
-
-            // Solicita atualizações a cada 1 segundo (1000ms) e 0 metros
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                1000L,
-                0f,
-                locationListener!!
-            )
-
-            // Tenta ativar também via Rede para ter backup
-            locationManager.requestLocationUpdates(
-                LocationManager.NETWORK_PROVIDER,
-                1000L,
-                0f,
-                locationListener!!
-            )
+            // Mantemos o GPS ligado para ter dado fresco quando o request chegar
+            locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener!!)
+            locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, locationListener!!)
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Para o GPS ao fechar o app para economizar bateria
         val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         locationListener?.let { locationManager.removeUpdates(it) }
         stop5GDetection(this)
@@ -373,51 +407,34 @@ class MainActivity : ComponentActivity() {
 
     @RequiresApi(Build.VERSION_CODES.R)
     private fun captureCellInfo(context: Context) {
-        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            timestampState.value = "Permission Denied"
-            return
-        }
+        // Verifica permissão (sem UI thread aqui, é worker thread)
+        if (ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) return
 
         val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
         val timeStampShort: String = SimpleDateFormat("HH:mm:ss").format(Date())
         val fullTimeStamp: String = SimpleDateFormat("yyyy.MM.dd_HH.mm.ss").format(Date())
         val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-        if (!locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            timestampState.value = "GPS OFF"
-            return
-        }
-
         val cellInfoList: List<CellInfo>? = telephonyManager.allCellInfo
-        if (cellInfoList.isNullOrEmpty()) {
-            cellIdState.value = "Searching..."
-            return
-        }
+        if (cellInfoList.isNullOrEmpty()) return
 
         cellInfoList.forEach { cellInfo ->
             if (cellInfo.isRegistered) {
-                // Força a UI a atualizar na Thread Principal
-                runOnUiThread {
-                    // Tenta pegar a localização do Listener ativo (mais recente)
-                    // Se não, tenta lastKnown
-                    val location: Location? = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                        ?: locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-
-                    latitudeState.value = location?.latitude ?: latitudeState.value
-                    longitudeState.value = location?.longitude ?: longitudeState.value
-
-                    signalDbmState.value = cellInfo.cellSignalStrength.dbm.toString()
-                    signalLevelState.value = cellInfo.cellSignalStrength.level.toString()
-                    timestampState.value = timeStampShort
-                }
-
+                // Prepara dados
                 val data = mutableListOf<Any>(fullTimeStamp)
-                data.add(latitudeState.value)
-                data.add(longitudeState.value)
-                data.add(signalDbmState.value)
-                data.add(signalLevelState.value)
 
-                // Usamos variáveis locais para preencher o CSV corretamente na thread de background
+                // Pega localização do Estado (que é atualizado pelo listener)
+                // Usando valores atômicos para thread safety básico
+                val lat = latitudeState.value
+                val lon = longitudeState.value
+                data.add(lat)
+                data.add(lon)
+
+                val dbm = cellInfo.cellSignalStrength.dbm
+                val level = cellInfo.cellSignalStrength.level
+                data.add(dbm)
+                data.add(level)
+
                 var l_rssnr = "N/A"
                 var l_rsrq = "N/A"
                 var l_cellid = "N/A"
@@ -426,7 +443,6 @@ class MainActivity : ComponentActivity() {
                     is CellInfoGsm -> {
                         val id = cellInfo.cellIdentity
                         l_cellid = id.cid.toString()
-
                         id.mccString?.let { data.add(it) }
                         id.mncString?.let { data.add(it) }
                         data.add(id.cid); data.add(id.lac); data.add(5)
@@ -436,7 +452,6 @@ class MainActivity : ComponentActivity() {
                         l_cellid = id.ci.toString()
                         l_rssnr = cellInfo.cellSignalStrength.rssnr.toString()
                         l_rsrq = cellInfo.cellSignalStrength.rsrq.toString()
-
                         id.mccString?.let { data.add(it) }
                         id.mncString?.let { data.add(it) }
                         data.add(id.ci); data.add(id.tac); data.add(if (nsa.value) 10 else 6)
@@ -448,7 +463,6 @@ class MainActivity : ComponentActivity() {
                         l_cellid = id.nci.toString()
                         l_rssnr = sig.ssSinr.toString()
                         l_rsrq = sig.ssRsrq.toString()
-
                         id.mccString?.let { data.add(it) }
                         id.mncString?.let { data.add(it) }
                         data.add(id.nci); data.add(id.tac); data.add(9)
@@ -457,11 +471,14 @@ class MainActivity : ComponentActivity() {
                     else -> {}
                 }
 
-                // Atualiza o resto da UI na thread principal
-                runOnUiThread {
+                // Atualiza UI na thread principal
+                scope.launch(Dispatchers.Main) {
                     cellIdState.value = l_cellid
                     rssnrState.value = l_rssnr
                     rsrqState.value = l_rsrq
+                    signalDbmState.value = dbm.toString()
+                    signalLevelState.value = level.toString()
+                    timestampState.value = timeStampShort
                 }
 
                 saveCellInfoToCSV(data)
